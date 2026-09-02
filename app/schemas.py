@@ -137,13 +137,28 @@ class _ItemPatchFields(_StrictModel):
     recurrence: Optional[Recurrence] = None
     recurrence_interval: Optional[int] = Field(default=None, ge=1)
     done: Optional[bool] = None
+    move: Optional[Literal["up", "down"]] = None
+    move_to: Optional[int] = Field(default=None, ge=0)
 
-    @field_validator("title", "priority", "recurrence", "done", mode="after")
+    @field_validator("title", "priority", "recurrence", "done", "move", "move_to",
+                     mode="after")
     @classmethod
     def _non_nullable_not_null(cls, value, info):
         if value is None:
             raise ValueError(f"{info.field_name} cannot be null")
         return value
+
+    @model_validator(mode="after")
+    def _move_exclusive(self):
+        # `move` and `move_to` are ordering ops (DESIGN-reorder §1.4,
+        # DESIGN-fix-reorder §1.1) — each is mutually exclusive with every
+        # other provided field (including each other).
+        if len(self.model_fields_set) > 1:
+            if "move_to" in self.model_fields_set:
+                raise ValueError("move/move_to cannot be combined with other fields")
+            if "move" in self.model_fields_set:
+                raise ValueError("move cannot be combined with other fields")
+        return self
 
     @field_validator("quantity", mode="after")
     @classmethod
@@ -152,7 +167,7 @@ class _ItemPatchFields(_StrictModel):
             raise ValueError("quantity cannot be null")
         return value
 
-    @field_validator("quantity", "recurrence_interval", mode="before")
+    @field_validator("quantity", "recurrence_interval", "move_to", mode="before")
     @classmethod
     def _numeric_not_boolean(cls, value, info):
         # JSON true/false are not numbers (pydantic lax mode would coerce bool).

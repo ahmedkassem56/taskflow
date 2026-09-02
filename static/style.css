@@ -542,6 +542,29 @@ body.sidebar-open { overflow: hidden; }
 }
 .view-actions { display: flex; align-items: center; gap: var(--space-2); flex: none; }
 
+/* ---------- Rearrange action bar (DESIGN-reorder §2.8) ----------
+   When rearrange mode is ON we REPLACE the normal view-header content with a
+   purpose-built action bar. It lives in normal flow (no absolute overlay) so
+   it can NEVER overlap a row or its arrows. */
+.view-header.rearrange-bar {
+  margin-bottom: var(--space-4);
+}
+.view-header.rearrange-bar .view-title-row {
+  justify-content: flex-start;
+}
+.view-header.rearrange-bar .view-subtitle { display: none; }
+.view-header.rearrange-bar .rearrange-label {
+  font-weight: 600;
+  font-size: var(--fs-base);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+.view-header.rearrange-bar .rearrange-label svg { width: 16px; height: 16px; color: var(--accent); }
+.view-header.rearrange-bar .view-actions { margin-left: auto; }
+
 /* ---------- Filter bar / segmented control (§4.5) ---------- */
 .filter-bar {
   display: flex;
@@ -691,6 +714,7 @@ input[type='number'].field-input::-webkit-inner-spin-button { -webkit-appearance
 
 /* ---------- Item list & rows (§4.5) ---------- */
 .item-list {
+  position: relative;   /* anchors the overlay rearrange toolbar (§2.3) */
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -706,7 +730,8 @@ input[type='number'].field-input::-webkit-inner-spin-button { -webkit-appearance
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  transition: background var(--dur-micro) var(--ease);
+  transition: background var(--dur-micro) var(--ease),
+              transform var(--dur-micro) var(--ease);
   position: relative;
 }
 .item-row + .item-row { border-top: 1px solid var(--border); }
@@ -818,6 +843,89 @@ input[type='number'].field-input::-webkit-inner-spin-button { -webkit-appearance
 .row-actions { display: inline-flex; align-items: center; gap: 1px; flex: none; }
 .row-actions .icon-btn { color: var(--text-muted); }
 .row-actions .icon-btn:hover { color: var(--text); background: var(--surface-3); }
+
+/* ---------- Rearrange mode (DESIGN-reorder §2.8, SPEC-fix-reorder F2) ----------
+   The toolbar is an OVERLAY pill pinned to the FIRST ROW's top-right corner
+   (the first item is where the arrows live), never over the title — but below
+   the card's top edge so it doesn't cover the first row's title/checkbox.
+   Absolutely positioned inside .item-list: entering/leaving rearrange mode
+   never shifts the list, and the held row stays under the pointer. */
+/* No text selection anywhere in the list or the pill while rearranging. */
+body.rearrange-active #item-list {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Rows in rearrange mode (driven purely by body classes — no DOM re-render
+   on mode entry, so a held row survives into drag):
+   - the ACTIVE done-group gets grab cursor + move arrows (edit/delete hide);
+   - the other group is dimmed + inert.
+   body.rearrange-done marks "active group = done items". */
+body.rearrange-active .item-row { -webkit-user-select: none; user-select: none; }
+
+/* Inactive (other) group: dimmed. */
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="1"] { opacity: 0.45; }
+body.rearrange-active.rearrange-done .item-row[data-done="0"] { opacity: 0.45; }
+
+/* Active group: draggable. */
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="0"] .item-body,
+body.rearrange-active.rearrange-done .item-row[data-done="1"] .item-body { cursor: grab; touch-action: none; }
+
+/* Rows shift smoothly when the dragged row displaces them — SortableJS sets
+   transform: translateY on siblings during the drag (animation: 180ms). */
+body.rearrange-active .item-row { transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1), background var(--dur-micro) var(--ease); }
+
+/* SortableJS drag visuals.
+   - .sortable-ghost: the placeholder left where the row will land.
+   - .sortable-drag: the element following the pointer (the real row clone). */
+.sortable-ghost {
+  opacity: 0.4;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: var(--radius-md);
+}
+.sortable-chosen { cursor: grabbing; }
+.sortable-drag {
+  opacity: 0.95 !important;
+  cursor: grabbing;
+  box-shadow: var(--shadow-md) !important;
+  border-radius: var(--radius-md);
+  background: var(--surface) !important;
+}
+.sortable-drag .item-body { cursor: grabbing; }
+/* Row being dragged (native fallback when Sortable uses the real row). */
+.item-row.dragging {
+  z-index: 30;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  cursor: grabbing;
+  transition: none;
+}
+.item-row.dragging .item-body { cursor: grabbing; }
+.item-row.dragging:hover { background: var(--surface); }
+.item-row.dragging.done { background: var(--surface); }
+
+/* Move arrows: normally hidden; shown on the ACTIVE group in rearrange mode,
+   where they replace the edit/delete actions (also hidden). */
+.move-arrows { display: none; }
+.move-arrow {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="0"] .move-arrows,
+body.rearrange-active.rearrange-done .item-row[data-done="1"] .move-arrows { display: inline-flex; gap: 1px; }
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="0"] .row-actions > [data-action="edit-item"],
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="0"] .row-actions > [data-action="delete-item"],
+body.rearrange-active.rearrange-done .item-row[data-done="1"] .row-actions > [data-action="edit-item"],
+body.rearrange-active.rearrange-done .item-row[data-done="1"] .row-actions > [data-action="delete-item"] { display: none; }
+/* Arrows must stay fully visible (desktop hover rules hide .row-actions
+   .icon-btn until row hover — never in rearrange mode). */
+body.rearrange-active .item-row .row-actions .icon-btn,
+body.rearrange-active .item-row:focus-within .row-actions .icon-btn { opacity: 1; }
+/* Dimmed rows (other group) are inert. */
+body.rearrange-active:not(.rearrange-done) .item-row[data-done="1"] .item-body,
+body.rearrange-active.rearrange-done .item-row[data-done="0"] .item-body { cursor: default; touch-action: auto; }
 
 /* ---------- States: loading skeleton / empty (§4.5) ---------- */
 .state {

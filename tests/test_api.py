@@ -13,7 +13,8 @@ from datetime import date
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 ITEM_KEYS = {
     "id", "list_id", "title", "notes", "priority", "due_date", "quantity",
-    "done", "recurrence", "recurrence_interval", "created_at", "updated_at",
+    "position", "done", "recurrence", "recurrence_interval", "created_at",
+    "updated_at",
 }
 LIST_KEYS = {"id", "name", "item_count", "pending_count", "created_at", "updated_at"}
 
@@ -134,12 +135,14 @@ def test_item_crud_and_envelope(client):
     whole = make_item(client, lid, "Whole", quantity=1.0)
     assert whole["quantity"] == 1
 
-    # GET /api/items returns everything in canonical order with full shape
+    # GET /api/items returns everything in canonical order with full shape —
+    # new items land on top (position 0), so newest id comes first.
     r = client.get("/api/items")
     assert r.status_code == 200
-    assert [i["id"] for i in r.json()] == [iid, dflt["id"], half["id"], whole["id"]]
+    assert [i["id"] for i in r.json()] == [whole["id"], half["id"], dflt["id"], iid]
     for i in r.json():
         assert set(i.keys()) == ITEM_KEYS
+    assert [i["position"] for i in r.json()] == [0, 1, 2, 3]
 
     # PATCH partial update; envelope ALWAYS {item, spawned}
     r = client.patch(f"/api/items/{iid}", json={"title": "Buy oat milk", "quantity": 3})
@@ -160,9 +163,9 @@ def test_item_crud_and_envelope(client):
     r = toggle(client, iid, True)
     assert r["item"]["done"] is True and r["spawned"] is None
     assert toggle(client, iid, False)["item"]["done"] is False
-    # GET with status filters
+    # GET with status filters (done round-trip left positions untouched)
     assert [i["id"] for i in client.get("/api/items", params={"status": "pending"}).json()] \
-        == [iid, dflt["id"], half["id"], whole["id"]]
+        == [whole["id"], half["id"], dflt["id"], iid]
     assert client.get("/api/items", params={"status": "done"}).json() == []
 
     # DELETE -> 204 then gone; 404 when missing
@@ -342,42 +345,42 @@ def test_delete_list_cascades_items(client):
 # AC2 — canonical sort
 # ---------------------------------------------------------------------------
 
-def test_sort_order_pending_first_then_priority_then_due_then_created(make_client, sql):
-    """Crafted rows incl. same-second created_at and NULL due dates — asserts
-    the exact id sequence of the canonical ORDER BY (§2.0)."""
-    T0 = "2026-09-01T08:00:00.000000Z"   # same second for tie-break rows
-    T1 = "2026-09-01T09:00:00.000000Z"
+def test_sort_order_done_then_position_then_id(make_client, sql):
+    """Crafted rows with scrambled priorities/due dates, explicit positions,
+    and a position tie — asserts the exact id sequence of the canonical
+    ORDER BY: done ASC, position ASC, id ASC (DESIGN-reorder §1.2)."""
+    T0 = "2026-09-01T08:00:00.000000Z"
     sql.execute("INSERT INTO lists (name, created_at, updated_at) VALUES ('Sort', ?, ?)", (T0, T0))
     lid = sql.execute("SELECT id FROM lists").fetchone()["id"]
 
-    def ins(title, priority, due_date, done, created):
+    def ins(title, position, done, priority="none", due_date=None):
         cur = sql.execute(
             "INSERT INTO items (list_id, title, notes, priority, due_date, quantity,"
-            " done, recurrence, recurrence_interval, created_at, updated_at)"
-            " VALUES (?,?,NULL,?,?,1,?,'none',NULL,?,?)",
-            (lid, title, priority, due_date, done, created, created),
+            " position, done, recurrence, recurrence_interval, created_at, updated_at)"
+            " VALUES (?,?,NULL,?,?,1,?,?,'none',NULL,?,?)",
+            (lid, title, priority, due_date, position, done, T0, T0),
         )
         return cur.lastrowid
 
-    # ids 1..12 in insertion order
-    ins("done-high", "high", "2026-09-05", 1, T0)          # 1
-    ins("pend-high-late", "high", "2026-09-10", 0, T1)     # 2
-    ins("pend-high-early", "high", "2026-09-01", 0, T0)    # 3
-    ins("pend-high-nodue", "high", None, 0, T0)            # 4
-    ins("pend-med-dated", "medium", "2026-08-01", 0, T0)   # 5
-    ins("pend-low-dated", "low", "2026-07-01", 0, T0)      # 6
-    ins("pend-none-dated", "none", "2026-09-01", 0, T0)    # 7
-    ins("pend-high-early-2", "high", "2026-09-01", 0, T0)  # 8 — ties w/ 3
-    ins("pend-low-nodue-old", "low", None, 0, T0)          # 9
-    ins("pend-low-nodue-new", "low", None, 0, T1)          # 10
-    ins("pend-none-nodue", "none", None, 0, T0)            # 11
-    ins("pend-med-nodue", "medium", None, 0, T0)           # 12
+    # Insertion order is scrambled so id order != position order. Priorities
+    # and due dates are set deliberately non-monotonic — under the reorder
+    # contract they no longer sort (position and id decide).
+    pend_b = ins("pend pos1", 1, 0, priority="high", due_date="2026-09-10")
+    done_b = ins("done pos1", 1, 1)
+    pend_a = ins("pend pos0", 0, 0, priority="low")
+    pend_e = ins("pend pos5", 5, 0)
+    pend_f = ins("pend pos5", 5, 0)          # position tie -> id tie-break
+    done_a = ins("done pos0", 0, 1)
+    pend_c = ins("pend pos2", 2, 0, priority="medium", due_date="2026-08-01")
+    done_c = ins("done pos2", 2, 1)
 
     with make_client() as client:
         r = client.get("/api/items")
         assert r.status_code == 200
         ids = [i["id"] for i in r.json()]
-        assert ids == [3, 8, 2, 4, 5, 12, 6, 9, 10, 7, 11, 1], ids
+        # pending (done=0) sorted by position then id, then done group likewise
+        assert ids == [pend_a, pend_b, pend_c, pend_e, pend_f,
+                       done_a, done_b, done_c], ids
 
 
 # ---------------------------------------------------------------------------
@@ -393,9 +396,9 @@ def test_filter_by_list(client):
     make_item(client, l2, "also two")
 
     assert [i["id"] for i in client.get("/api/items", params={"list_id": l1}).json()] == \
-        [a["id"], a["id"] + 1]
+        [a["id"] + 1, a["id"]]   # newest first: second create landed on top
     assert [i["id"] for i in client.get("/api/items", params={"list_id": l2}).json()] == \
-        [b["id"], b["id"] + 1]
+        [b["id"] + 1, b["id"]]
     # unknown list -> 200 [] (empty subset, not an error)
     r = client.get("/api/items", params={"list_id": 424242})
     assert r.status_code == 200 and r.json() == []
@@ -413,9 +416,9 @@ def test_filter_status_pending_done(client):
     toggle(client, b["id"], True)
 
     assert [i["id"] for i in client.get("/api/items", params={"status": "all"}).json()] \
-        == [a["id"], c["id"], b["id"]]   # canonical: pending first, done last
+        == [c["id"], a["id"], b["id"]]   # canonical: pending (pos) first, done last
     assert [i["id"] for i in client.get("/api/items", params={"status": "pending"}).json()] \
-        == [a["id"], c["id"]]
+        == [c["id"], a["id"]]
     assert [i["id"] for i in client.get("/api/items", params={"status": "done"}).json()] \
         == [b["id"]]
 
@@ -458,7 +461,7 @@ def test_search_escapes_like_wildcards(client):
         return [i["id"] for i in client.get("/api/items", params={"q": q}).json()]
 
     # '%' and '_' must match literally, not act as LIKE wildcards
-    assert search("%") == [pct1["id"], pct2["id"]]
+    assert search("%") == [pct2["id"], pct1["id"]]   # canonical: newest first
     assert search("_") == [under["id"]]
     assert search("100%") == [pct1["id"]]
     assert search("under_") == [under["id"]]
@@ -690,7 +693,7 @@ def test_share_get_read_and_edit(client):
         assert set(body["list"].keys()) == LIST_KEYS
         assert body["list"]["name"] == "Groceries"
         assert body["list"]["item_count"] == 2 and body["list"]["pending_count"] == 2
-        assert [i["id"] for i in body["items"]] == [a["id"], a["id"] + 1]  # canonical
+        assert [i["id"] for i in body["items"]] == [a["id"] + 1, a["id"]]  # canonical, newest first
         for i in body["items"]:
             assert set(i.keys()) == ITEM_KEYS
 
@@ -843,3 +846,456 @@ def test_spa_shell_routes(client):
     r = client.get("/api/definitely/not/a/route")
     assert r.status_code == 404
     assert r.json() == {"detail": "Not found"}
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-reorder — new-on-top ordering + move-per-PATCH
+# ---------------------------------------------------------------------------
+
+def test_create_item_lands_on_top_and_shifts_others(client):
+    """AC1 — each new pending item takes position 0; the same list's existing
+    pending items shift down; done items and other lists are untouched."""
+    l1 = make_list(client, "One")["id"]
+    l2 = make_list(client, "Two")["id"]
+
+    a = make_item(client, l1, "first")
+    assert a["position"] == 0
+    b = make_item(client, l1, "second")
+    assert b["position"] == 0
+    c = make_item(client, l1, "third")
+    assert c["position"] == 0
+
+    # canonical order: newest on top, positions compact 0..n-1
+    items = client.get("/api/items", params={"list_id": l1}).json()
+    assert [i["id"] for i in items] == [c["id"], b["id"], a["id"]]
+    assert [i["position"] for i in items] == [0, 1, 2]
+
+    # creating in another list does not shift l1
+    x = make_item(client, l2, "other")
+    assert x["position"] == 0
+    items = client.get("/api/items", params={"list_id": l1}).json()
+    assert [i["id"] for i in items] == [c["id"], b["id"], a["id"]]
+    assert [i["position"] for i in items] == [0, 1, 2]
+
+    # the shift targets pending (done = 0) only: done items keep their slot
+    toggle(client, b["id"], True)          # l1: a@2, b@1(done), c@0
+    d = make_item(client, l1, "fourth")
+    items = client.get("/api/items", params={"list_id": l1}).json()
+    assert [i["id"] for i in items] == [d["id"], c["id"], a["id"], b["id"]]
+    assert [i["position"] for i in items] == [0, 1, 3, 1]   # gap: b done @1
+
+
+def test_migration_position_idempotent_and_backfill(tmp_path):
+    """AC2 — fresh schema has the column; double init_schema is fine; a
+    legacy-shaped DB (no position column) gets it added with backfill
+    position = id, exactly once."""
+    from app.db import SCHEMA_SQL, connect, init_schema
+
+    # fresh DB: column comes from CREATE TABLE itself
+    fresh = connect(str(tmp_path / "fresh.db"))
+    init_schema(fresh)
+    cols = [r[1] for r in fresh.execute("PRAGMA table_info(items)").fetchall()]
+    assert "position" in cols
+    init_schema(fresh)                     # idempotent: no error, no dup column
+    cols = [r[1] for r in fresh.execute("PRAGMA table_info(items)").fetchall()]
+    assert cols.count("position") == 1
+    fresh.close()
+
+    # legacy-shaped DB: items table built WITHOUT the position column
+    legacy_sql = SCHEMA_SQL.replace(
+        "  position            INTEGER NOT NULL DEFAULT 0,\n", ""
+    )
+    conn = connect(str(tmp_path / "legacy.db"))
+    conn.executescript(legacy_sql)
+    conn.execute(
+        "INSERT INTO lists (name, created_at, updated_at) VALUES ('L', 't', 't')"
+    )
+    lid = conn.execute("SELECT id FROM lists").fetchone()["id"]
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO items (list_id, title, notes, priority, due_date, quantity,"
+            " done, recurrence, recurrence_interval, created_at, updated_at)"
+            " VALUES (?,?,NULL,'none',NULL,1,0,'none',NULL,'t','t')",
+            (lid, f"task {i}"),
+        )
+    rows = conn.execute("SELECT id FROM items ORDER BY id").fetchall()
+    before = [(r["id"], r["id"]) for r in rows]     # backfill expectation
+
+    init_schema(conn)                        # guarded migration fires
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(items)").fetchall()]
+    assert "position" in cols
+    got = [(r["id"], r["position"])
+           for r in conn.execute("SELECT id, position FROM items ORDER BY id")]
+    assert got == before
+
+    init_schema(conn)                        # second pass: guarded, no-op
+    got = [(r["id"], r["position"])
+           for r in conn.execute("SELECT id, position FROM items ORDER BY id")]
+    assert got == before
+    conn.close()
+
+
+def test_move_up_down_swaps_with_neighbor(client):
+    """AC3 — move:up/down swaps position with the adjacent same-list pending
+    item; response is {item, swapped}; updated_at bumps like any PATCH."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")          # oldest -> bottom
+    b = make_item(client, lid, "b")
+    c = make_item(client, lid, "c")          # newest -> top
+
+    assert [i["id"] for i in client.get("/api/items", params={"list_id": lid}).json()] \
+        == [c["id"], b["id"], a["id"]]
+
+    before = {i["id"]: i["updated_at"]
+              for i in client.get("/api/items", params={"list_id": lid}).json()}
+
+    r = client.patch(f"/api/items/{a['id']}", json={"move": "up"})
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body.keys()) == {"item", "swapped"}
+    assert body["item"]["id"] == a["id"] and body["item"]["position"] == 1
+    assert body["item"]["updated_at"] >= before[a["id"]]   # moved row bumped
+    assert body["swapped"]["id"] == b["id"] and body["swapped"]["position"] == 2
+    assert body["swapped"]["updated_at"] >= before[b["id"]]
+    got = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in got] == [c["id"], a["id"], b["id"]]
+    assert [i["position"] for i in got] == [0, 1, 2]
+
+    # and back down again
+    r = client.patch(f"/api/items/{a['id']}", json={"move": "down"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["item"]["id"] == a["id"] and body["item"]["position"] == 2
+    assert body["swapped"]["id"] == b["id"] and body["swapped"]["position"] == 1
+    got = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in got] == [c["id"], b["id"], a["id"]]
+
+
+def test_move_boundary_noop(client):
+    """AC3 — top item move:up and bottom item move:down are 200 no-ops:
+    swapped None, positions and updated_at untouched."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")          # bottom
+    b = make_item(client, lid, "b")          # top
+    top, bottom = b, a
+
+    before = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in before] == [b["id"], a["id"]]
+
+    for item_id, direction in ((top["id"], "up"), (bottom["id"], "down")):
+        r = client.patch(f"/api/items/{item_id}", json={"move": direction})
+        assert r.status_code == 200, (direction, r.text)
+        body = r.json()
+        assert set(body.keys()) == {"item", "swapped"}
+        assert body["swapped"] is None
+        row = next(i for i in before if i["id"] == item_id)
+        assert body["item"]["id"] == item_id
+        assert body["item"]["position"] == row["position"]      # unchanged
+        assert body["item"]["updated_at"] == row["updated_at"]  # no bump
+
+    got = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in got] == [b["id"], a["id"]]
+    assert [i["position"] for i in got] == [0, 1]
+
+
+def test_move_scoped_to_list_and_done_group(client):
+    """AC4 — a move only ever swaps within the same list AND the same done
+    group: pending items can't drop into the done group, done items can't rise
+    into pending, and other lists are never touched."""
+    l1 = make_list(client, "One")["id"]
+    l2 = make_list(client, "Two")["id"]
+    p1 = make_item(client, l1, "p1")
+    p2 = make_item(client, l1, "p2")
+    d1 = make_item(client, l1, "d1")
+    d2 = make_item(client, l1, "d2")
+    q1 = make_item(client, l2, "q1")
+    q2 = make_item(client, l2, "q2")
+    toggle(client, d1["id"], True)
+    toggle(client, d2["id"], True)
+    # l1 canonical: p2, p1 (pending) then d2, d1 (done); l2: q2, q1
+    assert [i["id"] for i in client.get("/api/items", params={"list_id": l1}).json()] \
+        == [p2["id"], p1["id"], d2["id"], d1["id"]]
+    assert [i["id"] for i in client.get("/api/items", params={"list_id": l2}).json()] \
+        == [q2["id"], q1["id"]]
+
+    # done item at the top of its done group: up is a no-op even though
+    # pending rows sit above it in canonical order (different group)
+    r = client.patch(f"/api/items/{d2['id']}", json={"move": "up"})
+    assert r.status_code == 200 and r.json()["swapped"] is None
+
+    # bottom pending item: down is a no-op — must not cross into done group
+    r = client.patch(f"/api/items/{p1['id']}", json={"move": "down"})
+    assert r.status_code == 200 and r.json()["swapped"] is None
+
+    # cross-list: l2's top pending cannot rise past l1 rows either
+    r = client.patch(f"/api/items/{q2['id']}", json={"move": "up"})
+    assert r.status_code == 200 and r.json()["swapped"] is None
+
+    # real swap within l1's pending group
+    r = client.patch(f"/api/items/{p2['id']}", json={"move": "down"})
+    assert r.json()["swapped"]["id"] == p1["id"]
+    # real swap within l1's done group (up)
+    r = client.patch(f"/api/items/{d1['id']}", json={"move": "up"})
+    assert r.json()["swapped"]["id"] == d2["id"]
+    got = client.get("/api/items", params={"list_id": l1}).json()
+    assert [i["id"] for i in got] == [p1["id"], p2["id"], d1["id"], d2["id"]]
+    # l2 never moved
+    assert [i["id"] for i in client.get("/api/items", params={"list_id": l2}).json()] \
+        == [q2["id"], q1["id"]]
+
+
+def test_move_combined_with_other_fields_422(client):
+    """move is an ordering op — combining it with any other PATCH field is a
+    422; bad direction / null move are 422 too; nothing changes."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")
+    b = make_item(client, lid, "b")
+    for payload in ({"move": "up", "done": True},
+                    {"move": "down", "title": "renamed"},
+                    {"move": "up", "list_id": lid},
+                    {"move": "down", "recurrence": "daily"},
+                    {"move": "up", "quantity": 3}):
+        r = client.patch(f"/api/items/{a['id']}", json=payload)
+        assert r.status_code == 422, (payload, r.text)
+        assert "move cannot be combined with other fields" in r.json()["detail"]
+    assert client.patch(f"/api/items/{a['id']}", json={"move": "left"}).status_code == 422
+    assert client.patch(f"/api/items/{a['id']}", json={"move": None}).status_code == 422
+    got = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in got] == [b["id"], a["id"]]
+    assert [i["position"] for i in got] == [0, 1]
+
+
+def test_recurrence_spawn_lands_on_top(client):
+    """§1.4 — a recurrence spawn is a fresh pending item: it lands at position
+    0 and shifts the list's other pending items down one slot."""
+    lid = make_list(client, "L")["id"]
+    older = make_item(client, lid, "older")
+    item = make_item(client, lid, "Repeat", recurrence="daily",
+                     due_date="2026-09-05")
+    env = toggle(client, item["id"], True)
+    spawned = env["spawned"]
+    assert spawned is not None
+    assert spawned["position"] == 0
+    got = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in got] == [spawned["id"], older["id"], item["id"]]
+    assert [i["position"] for i in got] == [0, 2, 1]   # item done @1; older 1->2
+
+
+def test_shared_move_edit_works_readonly_403(client):
+    """AC9 — the shared edit PATCH supports move ({item, swapped}); read-only
+    shares still 403 and nothing changes."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")
+    b = make_item(client, lid, "b")          # top
+
+    edit = _share(client, lid, "edit")
+    r = client.patch(f"/api/shared/{edit['token']}/items/{a['id']}",
+                     json={"move": "up"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body.keys()) == {"item", "swapped"}
+    assert body["item"]["id"] == a["id"] and body["item"]["position"] == 0
+    assert body["swapped"]["id"] == b["id"] and body["swapped"]["position"] == 1
+    got = client.get(f"/api/shared/{edit['token']}").json()
+    assert [i["id"] for i in got["items"]] == [a["id"], b["id"]]
+
+    ro = _share(client, lid, "read")
+    r = client.patch(f"/api/shared/{ro['token']}/items/{a['id']}",
+                     json={"move": "down"})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "This shared list is read-only."}
+    got = client.get(f"/api/shared/{edit['token']}").json()
+    assert [i["id"] for i in got["items"]] == [a["id"], b["id"]]   # unchanged
+
+
+# ---------------------------------------------------------------------------
+# DESIGN-fix-reorder — move_to single-request move
+# ---------------------------------------------------------------------------
+
+def _pending_four(client, lid):
+    """Four pending items a(bottom) < b < c < d(top) — new-on-top."""
+    a = make_item(client, lid, "a")
+    b = make_item(client, lid, "b")
+    c = make_item(client, lid, "c")
+    d = make_item(client, lid, "d")
+    return a, b, c, d
+
+
+def _list_order(client, lid):
+    items = client.get("/api/items", params={"list_id": lid}).json()
+    return [i["id"] for i in items], [i["position"] for i in items]
+
+
+def test_move_to_ordinal_k(client):
+    """AC5 — move_to lands the item at group ordinal K; GET order matches."""
+    lid = make_list(client, "L")["id"]
+    a, b, c, d = _pending_four(client, lid)
+    ids0, pos0 = _list_order(client, lid)
+    assert ids0 == [d["id"], c["id"], b["id"], a["id"]]
+    assert pos0 == [0, 1, 2, 3]
+
+    # bottom item -> top (K=0)
+    r = client.patch(f"/api/items/{a['id']}", json={"move_to": 0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body.keys()) == {"item", "spawned"} and body["spawned"] is None
+    assert body["item"]["id"] == a["id"] and body["item"]["position"] == 0
+    ids, pos = _list_order(client, lid)
+    assert ids == [a["id"], d["id"], c["id"], b["id"]]
+    assert pos == [0, 1, 2, 3]
+
+    # middle item -> last slot (d at ordinal 1 -> K=3)
+    r = client.patch(f"/api/items/{d['id']}", json={"move_to": 3})
+    assert r.status_code == 200
+    assert r.json()["item"]["id"] == d["id"]
+    ids, pos = _list_order(client, lid)
+    assert ids == [a["id"], c["id"], b["id"], d["id"]]
+    assert pos == [0, 1, 2, 3]
+
+    # and one item up one slot (c at ordinal 1 -> K=2)
+    r = client.patch(f"/api/items/{c['id']}", json={"move_to": 2})
+    assert r.status_code == 200
+    ids, pos = _list_order(client, lid)
+    assert ids == [a["id"], b["id"], c["id"], d["id"]]
+    assert pos == [0, 1, 2, 3]
+
+
+def test_move_to_noop_when_k_current(client):
+    """AC5 — K == current ordinal is a 200 no-op: order unchanged, no
+    updated_at bump anywhere."""
+    lid = make_list(client, "L")["id"]
+    a, b, c, d = _pending_four(client, lid)
+    before = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in before] == [d["id"], c["id"], b["id"], a["id"]]
+    row_c = next(i for i in before if i["id"] == c["id"])   # ordinal 1
+
+    r = client.patch(f"/api/items/{c['id']}", json={"move_to": 1})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["item"]["id"] == c["id"]
+    assert body["item"]["position"] == 1
+    assert body["item"]["updated_at"] == row_c["updated_at"]   # no bump
+
+    after = client.get("/api/items", params={"list_id": lid}).json()
+    assert [i["id"] for i in after] == [d["id"], c["id"], b["id"], a["id"]]
+    assert [i["position"] for i in after] == [0, 1, 2, 3]
+    assert {i["id"]: i["updated_at"] for i in after} == \
+        {i["id"]: i["updated_at"] for i in before}
+
+
+def test_move_to_out_of_range_clamps(client):
+    """AC5 — K beyond the group clamps to the last slot; negative K is a 422
+    (schema ge=0)."""
+    lid = make_list(client, "L")["id"]
+    a, b, c, d = _pending_four(client, lid)
+    # top item with a huge K -> clamped to the very last slot
+    r = client.patch(f"/api/items/{d['id']}", json={"move_to": 99})
+    assert r.status_code == 200, r.text
+    ids, pos = _list_order(client, lid)
+    assert ids == [c["id"], b["id"], a["id"], d["id"]]
+    assert pos == [0, 1, 2, 3]
+
+    # bottom item with a huge K -> clamps back onto its own slot: 200 no-op,
+    # order AND updated_at unchanged
+    before = client.get("/api/items", params={"list_id": lid}).json()
+    row_d = next(i for i in before if i["id"] == d["id"])
+    r = client.patch(f"/api/items/{d['id']}", json={"move_to": 42})
+    assert r.status_code == 200
+    ids, pos = _list_order(client, lid)
+    assert ids == [c["id"], b["id"], a["id"], d["id"]]
+    after = client.get("/api/items", params={"list_id": lid}).json()
+    assert next(i for i in after if i["id"] == d["id"])["updated_at"] == \
+        row_d["updated_at"]
+    assert {i["id"]: i["updated_at"] for i in after} == \
+        {i["id"]: i["updated_at"] for i in before}
+
+    # negative / non-integer K -> 422 (nothing changes)
+    for bad in (-1, -5, "x", 1.5, True):
+        rr = client.patch(f"/api/items/{d['id']}", json={"move_to": bad})
+        assert rr.status_code == 422, (bad, rr.text)
+    ids, pos = _list_order(client, lid)
+    assert ids == [c["id"], b["id"], a["id"], d["id"]]
+    assert pos == [0, 1, 2, 3]
+
+
+def test_move_to_scoped_to_list_and_done_group(client):
+    """AC5 — move_to reorders only within the same list AND same done group:
+    pending never crosses into done (or vice versa) even with a huge K, and
+    other lists are untouched."""
+    l1 = make_list(client, "One")["id"]
+    l2 = make_list(client, "Two")["id"]
+    p1 = make_item(client, l1, "p1")
+    p2 = make_item(client, l1, "p2")
+    d1 = make_item(client, l1, "d1")
+    d2 = make_item(client, l1, "d2")
+    q1 = make_item(client, l2, "q1")
+    q2 = make_item(client, l2, "q2")
+    toggle(client, d1["id"], True)
+    toggle(client, d2["id"], True)
+    # l1 canonical: p2, p1 (pending) then d2, d1 (done); l2: q2, q1
+    ids1, _ = _list_order(client, l1)
+    assert ids1 == [p2["id"], p1["id"], d2["id"], d1["id"]]
+
+    # bottom pending -> top of the pending group only (K=0)
+    r = client.patch(f"/api/items/{p1['id']}", json={"move_to": 0})
+    assert r.status_code == 200
+    ids1, _ = _list_order(client, l1)
+    assert ids1 == [p1["id"], p2["id"], d2["id"], d1["id"]]
+
+    # done item with a huge K: clamps inside the done group — cannot rise
+    # into the pending group, cannot leave its list
+    r = client.patch(f"/api/items/{d2['id']}", json={"move_to": 99})
+    assert r.status_code == 200
+    ids1, _ = _list_order(client, l1)
+    assert ids1 == [p1["id"], p2["id"], d1["id"], d2["id"]]
+    # done group internal order (d1 before d2) and pending untouched
+    assert ids1[:2] == [p1["id"], p2["id"]]
+
+    # other list never moved
+    ids2, _ = _list_order(client, l2)
+    assert ids2 == [q2["id"], q1["id"]]
+
+
+def test_move_to_combined_with_other_fields_422(client):
+    """AC5 — move_to is an ordering op: combined with any other field (or with
+    move) -> 422; nothing changes."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")
+    b = make_item(client, lid, "b")
+    for payload in ({"move_to": 1, "title": "renamed"},
+                    {"move_to": 0, "done": True},
+                    {"move_to": 1, "move": "up"},
+                    {"move_to": 0, "list_id": lid},
+                    {"move_to": 2, "quantity": 3}):
+        r = client.patch(f"/api/items/{a['id']}", json=payload)
+        assert r.status_code == 422, (payload, r.text)
+        assert "cannot be combined with other fields" in r.json()["detail"]
+    # explicit null move_to -> 422 too
+    assert client.patch(f"/api/items/{a['id']}", json={"move_to": None}).status_code == 422
+    ids, pos = _list_order(client, lid)
+    assert ids == [b["id"], a["id"]]
+    assert pos == [0, 1]
+
+
+def test_shared_move_to_edit_works_readonly_403(client):
+    """AC5 — the shared edit PATCH supports move_to; read-only shares still
+    403 and nothing changes."""
+    lid = make_list(client, "L")["id"]
+    a = make_item(client, lid, "a")
+    b = make_item(client, lid, "b")          # top
+
+    edit = _share(client, lid, "edit")
+    r = client.patch(f"/api/shared/{edit['token']}/items/{a['id']}",
+                     json={"move_to": 0})
+    assert r.status_code == 200, r.text
+    assert r.json()["item"]["id"] == a["id"] and r.json()["item"]["position"] == 0
+    got = client.get(f"/api/shared/{edit['token']}").json()
+    assert [i["id"] for i in got["items"]] == [a["id"], b["id"]]
+
+    ro = _share(client, lid, "read")
+    r = client.patch(f"/api/shared/{ro['token']}/items/{a['id']}",
+                     json={"move_to": 1})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "This shared list is read-only."}
+    got = client.get(f"/api/shared/{edit['token']}").json()
+    assert [i["id"] for i in got["items"]] == [a["id"], b["id"]]   # unchanged

@@ -5,7 +5,7 @@
  * unregister old service workers when testing fresh changes — stale workers
  * haunt offline testing otherwise).
  */
-const SHELL_CACHE = 'taskflow-shell-v6';
+const SHELL_CACHE = 'taskflow-shell-v13';
 const API_CACHE = 'taskflow-api-v1';
 
 /* Every entry MUST exist on the server or install fails (addAll rejects). */
@@ -14,6 +14,7 @@ const PRECACHE = [
   '/index.html',
   '/style.css',
   '/app.js',
+  '/vendor/sortable.min.js',
   '/manifest.webmanifest',
   '/icons/icon-32.png',
   '/icons/icon-192.png',

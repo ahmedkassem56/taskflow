@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS items (
   due_date            TEXT    CHECK (due_date IS NULL OR
                               due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   quantity            REAL    NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  position            INTEGER NOT NULL DEFAULT 0,
   done                INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0,1)),
   recurrence          TEXT    NOT NULL DEFAULT 'none'
                       CHECK (recurrence IN ('none','daily','weekly','monthly','custom')),
@@ -58,15 +59,11 @@ CREATE INDEX IF NOT EXISTS idx_items_done      ON items(done);
 CREATE INDEX IF NOT EXISTS idx_shares_list     ON shares(list_id);
 """
 
-# DESIGN.md §2.0 — canonical item sort (single SQL used by every item-returning
-# endpoint). The query must alias the items table as `i`.
+# DESIGN-reorder §1.2 — canonical item sort (single SQL used by every
+# item-returning endpoint): pending first, then position (lower = higher on
+# screen), then id. The query must alias the items table as `i`.
 ITEM_ORDER_SQL = (
-    "ORDER BY i.done ASC, "
-    "CASE i.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END ASC, "
-    "i.due_date IS NULL ASC, "
-    "i.due_date ASC, "
-    "i.created_at ASC, "
-    "i.id ASC"
+    "ORDER BY i.done ASC, i.position ASC, i.id ASC"
 )
 
 
@@ -101,9 +98,21 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent schema creation; WAL is set once at startup (persistent)."""
+    """Idempotent schema creation; WAL is set once at startup (persistent).
+
+    Guarded migration (DESIGN-reorder §1.1): DBs created before the `position`
+    column existed get it added via ALTER and backfilled to `id` (ids are
+    monotonic in creation order, so this preserves current relative order).
+    Runs only when the column is missing -> idempotent across restarts.
+    """
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA_SQL)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(items)").fetchall()]
+    if "position" not in cols:
+        conn.execute(
+            "ALTER TABLE items ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute("UPDATE items SET position = id")
 
 
 def get_db():
@@ -145,6 +154,7 @@ def item_from_row(row) -> dict | None:
         "priority": row["priority"],
         "due_date": row["due_date"],
         "quantity": normalize_quantity(row["quantity"]),
+        "position": row["position"],
         "done": bool(row["done"]),
         "recurrence": row["recurrence"],
         "recurrence_interval": row["recurrence_interval"],

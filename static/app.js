@@ -75,6 +75,11 @@ const state = {
   installed: false,
   sidebarOpener: null,
   searchOpener: null,
+  rearrange: {
+    active: false,
+    suppressClick: false,
+    doneGroup: 'pending'   // 'pending' | 'done' — group being rearranged
+  },
   poll: {
     timer: null,
     running: false,   // in-flight guard
@@ -311,9 +316,47 @@ async function refreshApp() {
   renderAll();
 }
 
-function enterView(type, listId) {
+/* ---------------- view persistence ----------------
+   The app reloads to the last-opened list (SPEC-v3 §R6.2): selection survives
+   refresh / PWA relaunch. Stored separately from the theme key. */
+const VIEW_KEY = 'taskflow:view:v1';
+
+function currentViewType() {
+  return state.view ? state.view.type : 'all';
+}
+
+function setViewParams(type, listId) {
   state.view = { type: type, listId: listId != null ? Number(listId) : null };
-  state.viewKey = type === 'all' ? 'all' : 'list:' + state.view.listId;
+}
+
+function persistView() {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify(state.view || { type: 'all', listId: null }));
+  } catch (err) { /* storage unavailable — ignore */ }
+}
+
+function restoreView() {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (v && (v.type === 'all' || v.type === 'list')) {
+      return { type: v.type, listId: v.type === 'list' ? Number(v.listId) : null };
+    }
+  } catch (err) { /* malformed — fall through */ }
+  return null;
+}
+
+function viewStorageKey() {
+  return state.view ? (state.view.type === 'all' ? 'all' : 'list:' + state.view.listId) : null;
+}
+
+function enterView(type, listId) {
+  exitRearrange();
+  const view = { type: type, listId: listId != null ? Number(listId) : null };
+  setViewParams(view.type, view.listId);
+  state.viewKey = viewStorageKey();
+  persistView();
   state.skeleton = true;
   renderAll();
   fetchAppData(true)
@@ -322,6 +365,7 @@ function enterView(type, listId) {
 }
 
 async function loadApp() {
+  exitRearrange();
   state.mode = 'app';
   state.viewKey = null;
   document.body.classList.remove('share-mode');
@@ -343,8 +387,15 @@ async function loadApp() {
     toastError(err.message);
     return;
   }
-  if (!state.viewKey) enterView('all', null);
-  else renderAll();
+  const saved = restoreView();
+  if (saved && saved.type === 'list' &&
+    state.lists.some(function (l) { return l.id === saved.listId; })) {
+    setViewParams('list', saved.listId);
+  } else {
+    setViewParams('all', null);
+  }
+  state.viewKey = viewStorageKey();
+  renderAll();
 }
 
 function renderAll() {
@@ -403,6 +454,11 @@ function renderViewHeader() {
   if (!meta) return;
   titleEl.textContent = meta.title;
   subEl.textContent = meta.total ? meta.done + ' of ' + meta.total + ' done' : 'No tasks yet';
+  /* rearrange mode: the header is the action bar (list name + Done) — the
+     Share action hides while reordering. syncRearrangeToolbar() rebuilds it. */
+  if (state.rearrange.active) { syncRearrangeToolbar(); return; }
+  const header = $('#view-header');
+  if (header) header.classList.remove('rearrange-bar');
   let actions = '';
   if (meta.isList) {
     actions = '<button type="button" class="btn btn-ghost" data-action="open-share" data-id="' + state.view.listId + '">' +
@@ -539,10 +595,28 @@ function metaHtml(item, opts) {
 function rowHtml(item, opts) {
   const done = !!item.done;
   const readOnly = opts.readOnly;
+  /* Rows always render their normal (edit/delete) actions. When rearrange
+     mode is ON, CSS (body.rearrange-active) swaps the actions to move arrows
+     for the active group and dims the other group — the DOM is NOT re-built
+     on mode entry, so a held row survives the transition and drag works on
+     the very first gesture. */
   const title = item.title;
   const checkLabel = done ? 'Mark "' + title + '" not done' : 'Mark "' + title + '" done';
   const meta = metaHtml(item, opts);
-  return '<li class="item-row' + (done ? ' done' : '') + '" data-id="' + item.id + '">' +
+  let cls = 'item-row' + (done ? ' done' : '');
+  let actions = '';
+  if (!readOnly) {
+    actions =
+      '<div class="row-actions">' +
+      '<button type="button" class="icon-btn small" data-action="edit-item" data-id="' + item.id + '" aria-label="Edit task" title="Edit">' + icon('pencil') + '</button>' +
+      '<button type="button" class="icon-btn small" data-action="delete-item" data-id="' + item.id + '" aria-label="Delete task" title="Delete">' + icon('trash') + '</button>' +
+      '<span class="move-arrows">' +
+      '<button type="button" class="icon-btn small move-arrow" data-action="move-up" data-id="' + item.id + '" aria-label="Move up" title="Move up">\u2191</button>' +
+      '<button type="button" class="icon-btn small move-arrow" data-action="move-down" data-id="' + item.id + '" aria-label="Move down" title="Move down">\u2193</button>' +
+      '</span>' +
+      '</div>';
+  }
+  return '<li class="' + cls + '" data-id="' + item.id + '" data-done="' + (done ? '1' : '0') + '">' +
     '<label class="checkbox" title="' + esc(checkLabel) + '">' +
     '<input type="checkbox" class="checkbox-input" data-action="toggle-done" data-id="' + item.id + '" ' +
     (done ? 'checked ' : '') + (readOnly ? 'disabled ' : '') + 'aria-label="' + esc(checkLabel) + '">' +
@@ -552,11 +626,7 @@ function rowHtml(item, opts) {
     '<div class="item-title">' + esc(title) + '</div>' +
     (meta ? '<div class="item-meta">' + meta + '</div>' : '') +
     '</div>' +
-    (readOnly ? '' :
-      '<div class="row-actions">' +
-      '<button type="button" class="icon-btn small" data-action="edit-item" data-id="' + item.id + '" aria-label="Edit task" title="Edit">' + icon('pencil') + '</button>' +
-      '<button type="button" class="icon-btn small" data-action="delete-item" data-id="' + item.id + '" aria-label="Delete task" title="Delete">' + icon('trash') + '</button>' +
-      '</div>') +
+    actions +
     '</li>';
 }
 
@@ -586,6 +656,7 @@ function filtersActive() {
 }
 
 function clearFilters() {
+  exitRearrange();
   state.q = '';
   state.status = 'all';
   const input = $('#search-input');
@@ -597,6 +668,7 @@ function clearFilters() {
 
 function renderEmptyState() {
   const list = $('#item-list');
+  destroySortable();   // no rows → nothing to drag
   const hasFilters = filtersActive();
   if (state.mode === 'share') {
     if (state.shareError) {
@@ -659,17 +731,31 @@ function renderItems() {
     return;
   }
   if (!items.length) { renderEmptyState(); return; }
+  if (state.rearrange.active) {
+    /* nothing left in the rearranged group (e.g. last item toggled done) → leave mode */
+    const groupDone = state.rearrange.doneGroup === 'done';
+    const hasGroup = items.some(function (it) { return !!it.done === groupDone; });
+    if (!hasGroup) { exitRearrange(); return; }
+  }
   list.classList.remove('plain');
   const readOnly = state.mode === 'share' && state.share.permission !== 'edit';
   const showListName = state.mode === 'app' && state.view.type === 'all';
   list.innerHTML = items.map(function (item) {
-    return rowHtml(item, { showListName: showListName, readOnly: readOnly });
+    return rowHtml(item, {
+      showListName: showListName,
+      readOnly: readOnly
+    });
   }).join('');
+  /* the list DOM was rebuilt: (re)bind SortableJS if rearrange mode is on */
+  if (state.rearrange.active && !readOnly) createSortable();
+  else if (!state.rearrange.active && sortable) destroySortable();
+  syncRearrangeToolbar();
 }
 
 /* ---------------- share view (§4.8) ---------------- */
 async function loadShare(token, opts) {
   opts = opts || {};
+  if (!opts.silent) exitRearrange();
   state.mode = 'share';
   state.shareToken = token;
   state.share = null;
@@ -702,7 +788,8 @@ async function loadShare(token, opts) {
     state.shareError = true;
     if (err.status === 404) {
       /* branded "revoked" state; no retry loop */
-    } else {
+    } else if (!opts.silent) {
+      /* silent (poll / reorder) refreshes never toast */
       toastError(err.message);
     }
   }
@@ -782,16 +869,275 @@ function renderShareItems() {
     state.items = prevItems;
     return;
   }
+  if (state.rearrange.active) {
+    const groupDone = state.rearrange.doneGroup === 'done';
+    const hasGroup = filtered.some(function (it) { return !!it.done === groupDone; });
+    if (!hasGroup) { exitRearrange(); return; }
+  }
   list.classList.remove('plain');
   const readOnly = state.share.permission !== 'edit';
   list.innerHTML = filtered.map(function (item) {
-    return rowHtml(item, { showListName: false, readOnly: readOnly });
+    return rowHtml(item, {
+      showListName: false,
+      readOnly: readOnly
+    });
   }).join('');
+  /* the list DOM was rebuilt: (re)bind SortableJS if rearrange mode is on */
+  if (state.rearrange.active && !readOnly) createSortable();
+  else if (!state.rearrange.active && sortable) destroySortable();
+  syncRearrangeToolbar();
 }
 
 async function refreshShare(silent) {
   await loadShare(state.shareToken, { silent: !!silent });
 }
+
+/* ============================================================
+ * Hold-to-reorder rearrange mode (SortableJS)
+ * ============================================================ */
+const HOLD_MS = 450;          // long-press before a drag starts (Sortable delay)
+let rearrangeSaving = false;  // true while a drop-PATCH is in flight
+let sortable = null;          // live SortableJS instance on #item-list
+
+function rearrangePermitted() {
+  /* 'All tasks' is a cross-list view: items belong to different lists, so a
+     "position" there is meaningless — reorder only makes sense inside one
+     list. Hold-to-reorder and the arrows are disabled in the All view. */
+  if (state.mode === 'app' && state.view.type === 'all') return false;
+  if (state.mode === 'share') return !!(state.share && state.share.permission === 'edit');
+  return true;
+}
+
+function enterRearrange(itemId) {
+  if (state.rearrange.active) return;
+  const item = findItem(itemId);
+  if (!item || !rearrangePermitted()) return;
+  state.rearrange.active = true;
+  /* the group being rearranged is the group of the row the user grabbed */
+  state.rearrange.doneGroup = !!item.done ? 'done' : 'pending';
+  /* swallow the click that ends this long-press (it must not open edit) */
+  state.rearrange.suppressClick = true;
+  /* rearranging disables text selection inside the list */
+  document.body.classList.add('rearrange-active');
+  document.body.classList.toggle('rearrange-done', state.rearrange.doneGroup === 'done');
+  /* Rows are NEVER re-rendered here — SortableJS holds a live reference to
+     the element being dragged, so rebuilding the list mid-gesture would kill
+     the drag. The header swaps to the action bar; CSS on body.rearrange-active
+     reveals the move arrows. */
+  if (state.mode === 'share') renderShareItems();
+  else renderViewHeader();
+  /* while mode is on, subsequent drags start instantly (no re-hold) */
+  if (sortable) sortable.option('delay', 0);
+}
+
+function exitRearrange() {
+  if (!state.rearrange.active) return;
+  destroySortable();
+  state.rearrange.active = false;
+  state.rearrange.suppressClick = false;
+  state.rearrange.doneGroup = 'pending';
+  document.body.classList.remove('rearrange-active', 'rearrange-done');
+  if (state.mode === 'share') renderShareItems();
+  else renderAll();    // renderAll → renderViewHeader restores the normal header
+}
+
+/* Cancel any armed long-press (leave rearrange mode) when the user opens a
+   different view or the current list is deleted — see select-view / delete. */
+function leaveRearrangeIfActive() {
+  if (state.rearrange.active) exitRearrange();
+}
+
+/* Rearrange UI lives in the VIEW HEADER (normal flow — never overlaps rows):
+   when rearrange mode is active the header becomes a compact action bar with
+   the list name + a Done button; the row arrows are ALWAYS fully visible on
+   the active group (no hover-hiding, no overlay). */
+function syncRearrangeToolbar() {
+  const header = $('#view-header');
+  if (!header || header.hidden) return;   // share view has no app header
+  const existing = $('#rearrange-toolbar');
+  if (!state.rearrange.active) {
+    if (existing) existing.remove();
+    header.classList.remove('rearrange-bar');
+    if (state.mode === 'app') renderViewHeader();
+    return;
+  }
+  /* rearrange active: rebuild the header as the action bar */
+  const meta = currentViewMeta();
+  const titleEl = $('#view-title');
+  const subEl = $('#view-subtitle');
+  const actionsEl = $('#view-actions');
+  header.classList.add('rearrange-bar');
+  if (meta) {
+    titleEl.textContent = meta.title;
+    subEl.textContent = '';
+  }
+  actionsEl.innerHTML =
+    '<button type="button" class="btn btn-accent" data-action="exit-rearrange">' +
+    icon('check') + '<span>Done</span></button>';
+}
+
+/* ---------------- silent persistence (no toasts) ---------------- */
+async function silentRefresh() {
+  try {
+    if (state.mode === 'share') {
+      await loadShare(state.shareToken, { silent: true });
+    } else {
+      await fetchAppData(false);
+      renderAll();
+    }
+  } catch (err) {
+    /* silent — reorder refreshes never toast */
+  }
+}
+
+/* Arrow buttons: single PATCH {move}, silent refresh, mode stays active. */
+async function apiMoveItem(id, dir) {
+  if (rearrangeSaving) return;
+  rearrangeSaving = true;
+  try {
+    await apiFetch(mutationPathFor(id), { method: 'PATCH', body: { move: dir } });
+  } catch (err) {
+    /* silent — boundary no-ops and network failures never toast */
+  } finally {
+    rearrangeSaving = false;
+  }
+  await silentRefresh();
+}
+
+/* ---------------- SortableJS drag engine ---------------- */
+
+/* SortableJS only allows reordering WITHIN the active group: an element from
+   the pending group cannot be dropped among done items or vice versa. We
+   render pending + done as one Sortable list (so the ghost can move freely),
+   and onMove vetoes any crossing of the group boundary. */
+function sortableOnMove(evt) {
+  const activeDone = document.body.classList.contains('rearrange-done');
+  const fromDone = evt.dragged.dataset.done === '1';
+  const toDone = evt.related && evt.related.dataset.done === '1';
+  if (fromDone === activeDone && (toDone === activeDone || !evt.related)) return true;
+  return false;
+}
+
+function createSortable() {
+  const listEl = $('#item-list');
+  if (!listEl || typeof Sortable === 'undefined') return null;
+  if (sortable) sortable.destroy();
+  sortable = Sortable.create(listEl, {
+    animation: 180,                    // smooth reactive reflow while dragging
+    delay: state.rearrange.active ? 0 : HOLD_MS,  // already in mode → drags start instantly
+    delayOnTouchOnly: false,
+    touchStartThreshold: 6,            // px of movement before the hold is cancelled
+    filter: '.checkbox, .row-actions, .move-arrows, button, a, input, select, textarea',
+    preventOnFilter: false,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    dragClass: 'sortable-drag',
+    draggable: '.item-row',
+    fallbackOnBody: true,
+    onMove: sortableOnMove,
+    onEnd: onSortableEnd
+  });
+  return sortable;
+}
+
+function destroySortable() {
+  if (sortable) {
+    sortable.destroy();
+    sortable = null;
+  }
+}
+
+/* One drop happened: the DOM order is already correct (Sortable moved the
+   row). Persist with a single move_to PATCH, then silent-refresh. */
+async function onSortableEnd(evt) {
+  const row = evt.item;
+  if (!row || evt.oldIndex === evt.newIndex) return;
+  const dragId = Number(row.dataset.id);
+  if (!dragId) return;
+  /* group-relative ordinal: count ACTIVE-group rows above the dropped row */
+  const activeDone = document.body.classList.contains('rearrange-done');
+  let k = 0;
+  let cur = row.previousElementSibling;
+  while (cur) {
+    if (cur.classList && cur.classList.contains('item-row') &&
+      (cur.dataset.done === '1') === activeDone) k++;
+    cur = cur.previousElementSibling;
+  }
+  if (rearrangeSaving) return;
+  rearrangeSaving = true;
+  try {
+    await apiFetch(mutationPathFor(dragId), { method: 'PATCH', body: { move_to: k } });
+  } catch (err) {
+    /* silent — the refresh below resyncs with the server */
+  } finally {
+    rearrangeSaving = false;
+  }
+  await silentRefresh();
+}
+
+/* Long-press to ENTER rearrange mode (SortableJS does the rest of the
+   dragging; we just flip the mode on after the hold). Uses pointerdown +
+   timer so a plain tap still opens the edit modal. */
+document.addEventListener('pointerdown', function (e) {
+  /* every gesture starts clean — a stale suppression flag must never swallow
+     an unrelated later click */
+  if (state.rearrange.suppressClick) state.rearrange.suppressClick = false;
+  if (e.button !== undefined && e.button !== 0) return;
+  if (modalOpen()) return;
+  const row = e.target.closest ? e.target.closest('.item-row') : null;
+  if (!row) {
+    /* pointerdown outside every item row exits rearrange mode */
+    if (state.rearrange.active && !(e.target.closest && e.target.closest('.rearrange-toolbar'))) {
+      exitRearrange();
+    }
+    return;
+  }
+  if (state.rearrange.active) return;   // SortableJS handles drags from here
+  if (!rearrangePermitted()) return;
+  if (e.target.closest('.checkbox, .row-actions, button, a, input, select, textarea')) return;
+  const id = Number(row.dataset.id);
+  if (!id || !findItem(id)) return;
+  /* arm the hold: if the pointer stays ~HOLD_MS on a row without moving,
+     enter rearrange mode. SortableJS's own delay then takes over for the
+     drag itself. */
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let moved = false;
+  const onMove = function (me) {
+    if (Math.abs(me.clientX - startX) + Math.abs(me.clientY - startY) > 8) moved = true;
+  };
+  const onUp = function () {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+  setTimeout(function () {
+    if (moved) return;
+    if (state.rearrange.active) return;
+    if (state.q) {
+      /* reordering through a search filter would skip hidden rows — refuse */
+      state.rearrange.suppressClick = true;
+      toastInfo('Clear the search to reorder tasks.');
+      return;
+    }
+    enterRearrange(id);
+    createSortable();
+  }, HOLD_MS);
+});
+
+/* A long-press that entered rearrange mode must not ALSO open the edit
+   modal on release — suppressClick swallows exactly that one click.
+   (Capture phase: wins before the row's own click-to-edit handler.) */
+document.addEventListener('click', function (e) {
+  if (state.rearrange.suppressClick) {
+    state.rearrange.suppressClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}, true);
 
 /* ---------------- auto-refresh polling (DESIGN-polling §2) ---------------- */
 const POLL_INTERVAL_MS = 5000;
@@ -801,6 +1147,7 @@ async function pollTick() {
   if (state.poll.running) return;
   if (!state.poll.visible) return;
   if (modalOpen()) return;
+  if (state.rearrange.active) return; // no re-render mid-rearrange/drag (DESIGN-reorder §2.7)
   state.poll.running = true;
   try {
     if (state.mode === 'share') {
@@ -906,6 +1253,7 @@ const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([di
 function modalOpen() { return !!state.modal; }
 
 function openModal(kind, innerHtml, opts) {
+  exitRearrange();   /* modals never open over rearrange mode */
   opts = opts || {};
   const root = $('#modal-root');
   state.modal = {
@@ -1143,7 +1491,7 @@ async function runPendingDelete() {
       const wasCurrent = state.view.type === 'list' && state.view.listId === pd.id;
       if (wasCurrent) state.viewKey = null;
       await refreshApp();
-      if (wasCurrent) enterView('all', null);
+      if (wasCurrent) { setViewParams('all', null); state.viewKey = 'all'; persistView(); enterView('all', null); }
     } else if (pd.kind === 'share') {
       await apiFetch('/api/shares/' + pd.token, { method: 'DELETE' });
       state.shareLinks = state.shareLinks.filter(function (s) { return s.token !== pd.token; });
@@ -1340,6 +1688,7 @@ function handleAction(action, el) {
       const id = el.dataset.id ? Number(el.dataset.id) : null;
       if (view === 'all') enterView('all', null);
       else if (view === 'list' && id != null) enterView('list', id);
+      leaveRearrangeIfActive();
       closeSidebar();
       break;
     }
@@ -1378,6 +1727,15 @@ function handleAction(action, el) {
     case 'edit-delete':
       openDeleteItemConfirm(Number(el.dataset.id));
       break;
+    case 'move-up':
+      apiMoveItem(Number(el.dataset.id), 'up');
+      break;
+    case 'move-down':
+      apiMoveItem(Number(el.dataset.id), 'down');
+      break;
+    case 'exit-rearrange':
+      exitRearrange();
+      break;
     case 'confirm-delete':
       runPendingDelete();
       break;
@@ -1402,6 +1760,8 @@ function handleAction(action, el) {
 }
 
 document.addEventListener('click', function (e) {
+  /* (suppressClick for long-press releases is handled by the CAPTURE-phase
+     click listener above — it must never reach here.) */
   const actionEl = e.target.closest('[data-action]');
   if (actionEl) {
     handleAction(actionEl.dataset.action, actionEl);
@@ -1412,6 +1772,7 @@ document.addEventListener('click', function (e) {
   if (!row) return;
   if (e.target.closest('.checkbox, .row-actions, button, a, input, select, textarea')) return;
   if (state.mode === 'share' && state.share && state.share.permission !== 'edit') return; /* read-only: row click does nothing */
+  if (state.rearrange.active) return; /* rearrange mode: taps on rows never open edit */
   if (!row.dataset.id) return;
   openEditModal(Number(row.dataset.id));
 });
@@ -1420,6 +1781,13 @@ document.addEventListener('click', function (e) {
 document.addEventListener('change', function (e) {
   const input = e.target;
   if (input && input.classList && input.classList.contains('checkbox-input')) {
+    /* rearrange mode: ignore checkbox toggles entirely (they must not race a
+       drag-persist — DESIGN-fix-reorder §2.3). Revert the visual flip; the
+       next render restores the row. */
+    if (state.rearrange.active) {
+      input.checked = !input.checked;
+      return;
+    }
     handleToggle(Number(input.dataset.id), input);
   }
 });
@@ -1445,6 +1813,7 @@ document.addEventListener('keydown', function (e) {
     return;
   }
   if (e.key === 'Escape') {
+    if (state.rearrange.active) { exitRearrange(); return; }
     if (document.body.classList.contains('sidebar-open')) { closeSidebar(); return; }
     if (document.body.classList.contains('search-open')) { closeMobileSearch(); return; }
     return;
@@ -1520,6 +1889,7 @@ function syncSegmented() {
 
 function setStatus(status) {
   if (state.status === status) return;
+  exitRearrange();
   state.status = status;
   syncSegmented();
   if (state.mode === 'share') renderShareItems();
@@ -1527,6 +1897,7 @@ function setStatus(status) {
 }
 
 function setSearch(value) {
+  exitRearrange();
   state.q = value.trim();
   syncSearchClear();
   if (state.mode === 'share') renderShareItems();
