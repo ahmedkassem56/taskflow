@@ -11,9 +11,9 @@ vanilla JS.
 
 ## Screenshots
 
-| Light | Dark |
-|---|---|
-| ![Taskflow light](screenshots/taskflow-light.png) | ![Taskflow dark](screenshots/taskflow-dark.png) |
+| Light | Dark | Mobile |
+|---|---|---|
+| ![Taskflow light](screenshots/taskflow-light.png) | ![Taskflow dark](screenshots/taskflow-dark.png) | ![Taskflow mobile](screenshots/taskflow-mobile.png) |
 
 ## Features
 
