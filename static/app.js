@@ -356,15 +356,15 @@ function renderSidebar() {
   const totalPending = state.lists.reduce(function (acc, l) { return acc + l.pending_count; }, 0);
   const activeAll = state.view.type === 'all';
   let html = '';
-  html += '<button type="button" class="nav-row' + (activeAll ? ' active' : '') + '" data-action="select-view" data-view="all" ' +
+  html += '<div role="button" tabindex="0" class="nav-row' + (activeAll ? ' active' : '') + '" data-action="select-view" data-view="all" ' +
     (activeAll ? 'aria-current="true"' : '') + ' title="All tasks">' +
     '<span class="nav-ico">' + icon('inbox') + '</span>' +
     '<span class="nav-name">All tasks</span>' +
     (totalPending > 0 ? '<span class="nav-count">' + totalPending + '</span>' : '') +
-    '</button>';
+    '</div>';
   state.lists.forEach(function (l) {
     const active = state.view.type === 'list' && state.view.listId === l.id;
-    html += '<button type="button" class="nav-row' + (active ? ' active' : '') + '" data-action="select-view" data-view="list" data-id="' + l.id + '" ' +
+    html += '<div role="button" tabindex="0" class="nav-row' + (active ? ' active' : '') + '" data-action="select-view" data-view="list" data-id="' + l.id + '" ' +
       (active ? 'aria-current="true"' : '') + ' title="' + esc(l.name) + '">' +
       '<span class="nav-ico">' + icon('list') + '</span>' +
       '<span class="nav-name">' + esc(l.name) + '</span>' +
@@ -374,7 +374,7 @@ function renderSidebar() {
       '<button type="button" class="icon-btn small" data-action="open-share" data-id="' + l.id + '" aria-label="Share list" title="Share">' + icon('link') + '</button>' +
       '<button type="button" class="icon-btn small" data-action="delete-list" data-id="' + l.id + '" aria-label="Delete list" title="Delete">' + icon('trash') + '</button>' +
       '</span>' +
-      '</button>';
+      '</div>';
   });
   nav.innerHTML = html;
 }
@@ -1409,6 +1409,12 @@ document.addEventListener('keydown', function (e) {
     window.matchMedia('(min-width: 720px)').matches) {
     e.preventDefault();
     focusSearch();
+  }
+  /* nav rows are <div role=button> — activate on Enter/Space like a native button */
+  if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList &&
+    e.target.classList.contains('nav-row') && !isEditable(e.target)) {
+    e.preventDefault();
+    e.target.click();
   }
 });
 
