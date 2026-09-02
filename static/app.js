@@ -1091,8 +1091,12 @@ document.addEventListener('pointerdown', function (e) {
   if (modalOpen()) return;
   const row = e.target.closest ? e.target.closest('.item-row') : null;
   if (!row) {
-    /* pointerdown outside every item row exits rearrange mode */
-    if (state.rearrange.active && !(e.target.closest && e.target.closest('.rearrange-toolbar'))) {
+    /* pointerdown outside every item row exits rearrange mode — BUT never
+       when the press is on a BUTTON or the action bar: the Done button's
+       tap begins here, and swapping the Share button in mid-tap (between
+       this pointerdown and the click) makes the click land on Share. */
+    if (state.rearrange.active && !(e.target.closest && e.target.closest('.rearrange-toolbar')) &&
+      !(e.target.closest && e.target.closest('button, a, [data-action]'))) {
       exitRearrange();
     }
     return;
