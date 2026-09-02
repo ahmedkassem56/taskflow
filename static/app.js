@@ -937,8 +937,12 @@ function exitRearrange() {
   state.rearrange.suppressClick = false;
   state.rearrange.doneGroup = 'pending';
   document.body.classList.remove('rearrange-active', 'rearrange-done');
-  if (state.mode === 'share') renderShareItems();
-  else renderAll();    // renderAll → renderViewHeader restores the normal header
+  /* Defer the re-render: exiting runs inside the Done button's click handler,
+     and renderAll() swaps the Share button in at the SAME coordinates the
+     in-flight click is targeting — the Share button would receive the tail of
+     the same click and open the share modal. Next frame = clean. */
+  if (state.mode === 'share') requestAnimationFrame(renderShareItems);
+  else requestAnimationFrame(renderAll);
 }
 
 /* Cancel any armed long-press (leave rearrange mode) when the user opens a
@@ -1034,6 +1038,7 @@ function createSortable() {
     dragClass: 'sortable-drag',
     draggable: '.item-row',
     fallbackOnBody: true,
+    forceFallback: true,       // pointer-based drag: smooth, custom-styled, no native HTML5 ghost
     onMove: sortableOnMove,
     onEnd: onSortableEnd
   });

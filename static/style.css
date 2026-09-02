@@ -873,26 +873,27 @@ body.rearrange-active.rearrange-done .item-row[data-done="1"] .item-body { curso
 
 /* Rows shift smoothly when the dragged row displaces them — SortableJS sets
    transform: translateY on siblings during the drag (animation: 180ms). */
-body.rearrange-active .item-row { transition: transform 0.18s cubic-bezier(0.2, 0, 0, 1), background var(--dur-micro) var(--ease); }
+body.rearrange-active .item-row { transition: transform 0.16s cubic-bezier(0.25, 0.1, 0.25, 1), background var(--dur-micro) var(--ease); }
 
-/* SortableJS drag visuals.
+/* SortableJS drag visuals (forceFallback pointer-drag).
    - .sortable-ghost: the placeholder left where the row will land.
-   - .sortable-drag: the element following the pointer (the real row clone). */
+   - .sortable-drag: the element following the pointer (clone in fallback). */
 .sortable-ghost {
-  opacity: 0.4;
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  opacity: 0.35;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   box-shadow: inset 0 0 0 1.5px var(--accent);
   border-radius: var(--radius-md);
 }
 .sortable-chosen { cursor: grabbing; }
 .sortable-drag {
-  opacity: 0.95 !important;
-  cursor: grabbing;
-  box-shadow: var(--shadow-md) !important;
+  opacity: 0.98 !important;
+  cursor: grabbing !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18), 0 3px 10px rgba(0, 0, 0, 0.1) !important;
   border-radius: var(--radius-md);
   background: var(--surface) !important;
+  transform: scale(1.02);
 }
-.sortable-drag .item-body { cursor: grabbing; }
+.sortable-drag .item-body { cursor: grabbing !important; }
 /* Row being dragged (native fallback when Sortable uses the real row). */
 .item-row.dragging {
   z-index: 30;
