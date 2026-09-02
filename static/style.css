@@ -1097,6 +1097,8 @@ input[type='number'].field-input::-webkit-inner-spin-button { -webkit-appearance
     .row-actions .icon-btn { opacity: 0; transition: opacity var(--dur-micro) var(--ease), background var(--dur-micro) var(--ease), color var(--dur-micro) var(--ease); }
     .item-row:hover .row-actions .icon-btn,
     .item-row:focus-within .row-actions .icon-btn { opacity: 1; }
+    .nav-row:hover .row-actions .icon-btn,
+    .nav-row:focus-within .row-actions .icon-btn { opacity: 1; }
     .row-actions .icon-btn:focus-visible { opacity: 1; }
     .icon-btn.small { width: 28px; height: 28px; }
     .icon-btn.small svg { width: 15px; height: 15px; }

@@ -89,7 +89,7 @@ def test_sw_precache_entries_resolvable(client):
     assert r.headers["content-type"].startswith("text/javascript")
     assert r.headers.get("cache-control") == "no-cache"
     text = r.text
-    assert "taskflow-shell-v4" in text and "taskflow-api-v1" in text
+    assert "taskflow-shell-v5" in text and "taskflow-api-v1" in text
 
     m = re.search(r"const PRECACHE\s*=\s*\[(.*?)\];", text, re.S)
     assert m, "PRECACHE array not found in sw.js"
