@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Taskflow</title>
+  <meta name="description" content="Centralized lists for todos, shopping, and more.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#17171B" media="(prefers-color-scheme: dark)" id="theme-color-dark">
+  <meta name="theme-color" content="#FAFAFB" media="(prefers-color-scheme: light)" id="theme-color-light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Tasks">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/style.css">
+  <script>
+    /* Apply the persisted (or system) theme before first paint — no flash on reload.
+       The CSS media block in style.css is the no-JS fallback for the system default. */
+    (function () {
+      try {
+        var t = localStorage.getItem('taskflow-theme');
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+
+    <!-- ======================= Header ======================= -->
+    <header class="app-header" id="app-header">
+      <div class="header-left" id="header-left">
+        <button type="button" class="icon-btn header-btn" data-action="toggle-sidebar"
+                id="btn-sidebar" aria-label="Open sidebar" title="Open sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+        </button>
+        <a class="brand" id="brand" href="/" aria-label="Taskflow home">
+          <span class="brand-glyph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12.5 L10 16 L17.5 8"/></svg>
+          </span>
+          <span class="brand-name">Taskflow</span>
+        </a>
+        <div class="share-identity" id="share-identity" hidden>
+          <div class="share-identity-row">
+            <span class="share-title" id="share-title-text"></span>
+            <span class="perm-badge" id="share-permission-badge"></span>
+          </div>
+          <div class="share-sub" id="share-subtitle"></div>
+        </div>
+        <a class="open-app-link" id="open-app-link" href="/" hidden>Open app</a>
+      </div>
+
+      <div class="header-center">
+        <div class="search" id="search" role="search">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          <input type="search" id="search-input" placeholder="Search tasks…" aria-label="Search tasks" autocomplete="off">
+          <button type="button" class="icon-btn search-clear" data-action="clear-search" id="search-clear" aria-label="Clear search" title="Clear search" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <button type="button" class="icon-btn header-btn search-mobile-btn" data-action="open-search-mobile" id="btn-search-mobile" aria-label="Search" title="Search" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+        </button>
+        <button type="button" class="icon-btn header-btn" data-action="install-app" id="btn-install" aria-label="Install app" title="Install app" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+        </button>
+        <button type="button" class="icon-btn header-btn" data-action="toggle-theme" id="btn-theme" aria-label="Toggle theme" title="Toggle theme">
+          <!-- sun/moon swapped in by app.js -->
+        </button>
+      </div>
+    </header>
+
+    <div class="mobile-search-backdrop" id="search-backdrop" data-action="close-search-mobile" hidden></div>
+
+    <div class="layout" id="layout">
+      <!-- ======================= Sidebar ======================= -->
+      <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+        <div class="sidebar-inner">
+          <div class="sidebar-scroll">
+            <div class="sidebar-section">
+              <div class="micro-label">Lists</div>
+              <nav class="list-nav" id="list-nav" aria-label="Lists"></nav>
+            </div>
+          </div>
+          <div class="sidebar-footer">
+            <button type="button" class="btn ghost new-list-btn" data-action="new-list">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>New list</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+      <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="toggle-sidebar" hidden></div>
+
+      <!-- ======================= Main column ======================= -->
+      <main class="main" id="main">
+        <div class="main-inner">
+          <div class="view-header" id="view-header">
+            <div class="view-title-row">
+              <h1 class="view-title" id="view-title"></h1>
+              <div class="view-actions" id="view-actions"></div>
+            </div>
+            <p class="view-subtitle" id="view-subtitle"></p>
+          </div>
+
+          <div class="filter-bar" id="filter-bar" hidden>
+            <div class="segmented" role="group" aria-label="Filter by status" id="segmented">
+              <button type="button" class="segment" data-action="set-status" data-status="all" aria-pressed="true">All</button>
+              <button type="button" class="segment" data-action="set-status" data-status="pending" aria-pressed="false">Pending</button>
+              <button type="button" class="segment" data-action="set-status" data-status="done" aria-pressed="false">Done</button>
+            </div>
+            <span class="filter-hint" id="filter-hint" hidden></span>
+          </div>
+
+          <div class="composer" id="composer" hidden>
+            <form id="composer-form" novalidate>
+              <div class="composer-row">
+                <button type="submit" class="composer-add" aria-label="Add task" title="Add task">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <input type="text" id="composer-title" class="composer-input" placeholder="Add a task…" aria-label="Task title" maxlength="200" autocomplete="off">
+                <button type="button" class="composer-options-toggle" id="composer-options-toggle" data-action="toggle-composer-options" aria-expanded="false" aria-label="More options" title="More options">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+              </div>
+              <div class="composer-options" id="composer-options" hidden>
+                <div class="field-row">
+                  <div class="field field-grow">
+                    <label class="field-label" for="composer-notes">Notes</label>
+                    <input type="text" id="composer-notes" class="field-input" maxlength="5000" autocomplete="off">
+                  </div>
+                  <div class="field field-select-list" id="composer-list-field" hidden>
+                    <label class="field-label" for="composer-list">List</label>
+                    <select id="composer-list" class="field-input field-select"></select>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label class="field-label" for="composer-due">Due date</label>
+                    <input type="date" id="composer-due" class="field-input">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="composer-priority">Priority</label>
+                    <select id="composer-priority" class="field-input field-select">
+                      <option value="none">None</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <div class="field field-qty">
+                    <label class="field-label" for="composer-quantity">Quantity</label>
+                    <input type="number" id="composer-quantity" class="field-input" value="1" min="0.1" step="0.1" inputmode="decimal">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="composer-recurrence">Repeats</label>
+                    <select id="composer-recurrence" class="field-input field-select">
+                      <option value="none">None</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                      <option value="custom">Custom…</option>
+                    </select>
+                  </div>
+                  <div class="field" id="composer-interval-field" hidden>
+                    <label class="field-label" for="composer-interval">Every N days</label>
+                    <input type="number" id="composer-interval" class="field-input" min="1" step="1" value="1" inputmode="numeric">
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <ul class="item-list" id="item-list" aria-label="Tasks"></ul>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="modal-root" id="modal-root"></div>
+  <div class="toast-root" id="toast-root" aria-live="polite"></div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
