@@ -5,7 +5,7 @@
  * unregister old service workers when testing fresh changes — stale workers
  * haunt offline testing otherwise).
  */
-const SHELL_CACHE = 'taskflow-shell-v3';
+const SHELL_CACHE = 'taskflow-shell-v4';
 const API_CACHE = 'taskflow-api-v1';
 
 /* Every entry MUST exist on the server or install fails (addAll rejects). */

@@ -506,11 +506,9 @@ body.sidebar-open { overflow: hidden; }
   flex: none;
 }
 .nav-row.active .nav-count { background: transparent; }
-.nav-row .row-actions { display: none; align-items: center; gap: 1px; flex: none; }
+.nav-row .row-actions { display: inline-flex; align-items: center; gap: 1px; flex: none; }
 .nav-row .row-actions .icon-btn { width: 28px; height: 28px; color: var(--text-muted); }
 .nav-row .row-actions .icon-btn:hover { color: var(--text); background: var(--surface-3); }
-.nav-row:hover .nav-count, .nav-row:focus-within .nav-count { display: none; }
-.nav-row:hover .row-actions, .nav-row:focus-within .row-actions { display: inline-flex; }
 
 /* Main column */
 .main {
