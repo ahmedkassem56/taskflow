@@ -74,7 +74,12 @@ const state = {
   deferredPrompt: null,
   installed: false,
   sidebarOpener: null,
-  searchOpener: null
+  searchOpener: null,
+  poll: {
+    timer: null,
+    running: false,   // in-flight guard
+    visible: true
+  }
 };
 
 function listName(id) {
@@ -786,6 +791,45 @@ function renderShareItems() {
 
 async function refreshShare(silent) {
   await loadShare(state.shareToken, { silent: !!silent });
+}
+
+/* ---------------- auto-refresh polling (DESIGN-polling §2) ---------------- */
+const POLL_INTERVAL_MS = 5000;
+
+async function pollTick() {
+  // guards: no overlap, only when visible, never while a modal is open
+  if (state.poll.running) return;
+  if (!state.poll.visible) return;
+  if (modalOpen()) return;
+  state.poll.running = true;
+  try {
+    if (state.mode === 'share') {
+      await loadShare(state.shareToken, { silent: true });
+    } else {
+      await fetchAppData(false);
+      renderAll();
+    }
+  } catch (err) {
+    // silent — background polls never toast
+  } finally {
+    state.poll.running = false;
+  }
+}
+
+function startPolling() {
+  if (state.poll.timer != null) return;
+  state.poll.timer = setInterval(pollTick, POLL_INTERVAL_MS);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+}
+
+function stopPolling() {
+  if (state.poll.timer != null) { clearInterval(state.poll.timer); state.poll.timer = null; }
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+}
+
+function onVisibilityChange() {
+  state.poll.visible = document.visibilityState === 'visible';
+  if (state.poll.visible) pollTick(); // immediate refresh on return
 }
 
 /* ---------------- item mutations ---------------- */
@@ -1590,6 +1634,7 @@ function init() {
     loadApp();
   }
   registerSW();
+  startPolling();
 }
 
 if (document.readyState === 'loading') {
