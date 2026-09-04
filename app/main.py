@@ -349,6 +349,18 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Taskflow", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
 
+    # -- CORS (Flutter web / other origins during development) --------------
+    # Dev-stage: allow any origin so the Flutter web client (served from a
+    # different port/origin) can call the API. Tighten to explicit origins
+    # when auth/multi-user lands.
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # -- Exception handlers: `detail` is ALWAYS a string (§2.0) -------------
     @app.exception_handler(RequestValidationError)
     async def on_validation_error(request: Request, exc: RequestValidationError):
